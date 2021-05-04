@@ -209,6 +209,7 @@ def parse_args(argv):
         help='ARNs which should be granted permission',
         type=str,
         metavar='GRANTEE',
+        action='extend',
         nargs='+',
     )
     parser.add_argument(
@@ -216,6 +217,7 @@ def parse_args(argv):
         help='ARNs to which permission should be granted',
         type=str,
         metavar='RESOURCE',
+        action='extend',
         nargs='+',
     )
     parser.add_argument(
