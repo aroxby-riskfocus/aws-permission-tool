@@ -192,14 +192,14 @@ def parse_args(argv):
         help='ARNs which should be granted permission',
         type=str,
         metavar='GRANTEE',
-        nargs='*',
+        nargs='+',
     )
     parser.add_argument(
         '--resources',
         help='ARNs to which permission should be granted',
         type=str,
         metavar='RESOURCE',
-        nargs='*',
+        nargs='+',
     )
     parser.add_argument(
         '--search',
