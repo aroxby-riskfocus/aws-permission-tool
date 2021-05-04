@@ -18,19 +18,34 @@ SERVICE_MAP = {
                 'key': 'DataSetSummaries',
                 'params': ('AwsAccountId', )
             },
+            'datasource': {
+                'fn': 'list_data_sources',
+                'key': 'DataSources',
+                'params': ('AwsAccountId', )
+            },
         },
         'desc-perms': {
             'dataset': {
                 'fn': 'describe_data_set_permissions',
                 'key': 'Permissions',
                 'params': ('AwsAccountId', 'DataSetId')
-            }
+            },
+            'datasource': {
+                'fn': 'describe_data_source_permissions',
+                'key': 'Permissions',
+                'params': ('AwsAccountId', 'DataSourceId')
+            },
         },
         'grant-perms': {
             'dataset': {
                 'fn': 'update_data_set_permissions',
                 'key': 'Status',
                 'params': ('AwsAccountId', 'DataSetId', 'GrantPermissions'),
+            },
+            'datasource': {
+                'fn': 'update_data_source_permissions',
+                'key': 'Status',
+                'params': ('AwsAccountId', 'DataSourceId', 'GrantPermissions'),
             },
         },
         'grantees': ('user'),
@@ -156,6 +171,7 @@ def get_best_permissions(arn):
             'AwsAccountId': arn.account_id,
             'Namespace': 'default',
             'DataSetId': arn.resource_id,
+            'DataSourceId': arn.resource_id,
         },
     )
 
@@ -175,6 +191,7 @@ def grant_permissions(resource, actions, grantee):
             'AwsAccountId': resource.account_id,
             'Namespace': 'default',
             'DataSetId': resource.resource_id,
+            'DataSourceId': resource.resource_id,
             'GrantPermissions': ({
                 'Principal': str(grantee),
                 'Actions': actions,
