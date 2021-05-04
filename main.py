@@ -104,7 +104,7 @@ class ResourceSearch(object):
         if len(matches) > 1:
             for match in matches:
                 print(match)
-                raise ValueError(f'Multiple matches for {self.kwargs}')
+            raise ValueError(f'Multiple matches for {self.kwargs}')
 
         return matches[0]['Arn']
 
