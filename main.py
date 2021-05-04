@@ -2,12 +2,22 @@
 import argparse
 import sys
 
+import boto3
+
 
 SERVICE_MAP = {
     'quicksight': {
         'list': {
-            'user': 'list_users',
-            'dataset': 'list_data_sets',
+            'user': {
+                'fn': 'list_users',
+                'key': 'UserList',
+                'params': ('AwsAccountId', 'Namespace', )
+            },
+            'dataset': {
+                'fn': 'list_data_sets',
+                'key': 'DataSetSummaries',
+                'params': ('AwsAccountId', )
+            },
         },
         'describe': {
             'dataset': 'describe_data_set',
@@ -29,9 +39,10 @@ class Arn(object):
             raise ValueError(f'{arn} is not an AWS ARN')
 
         try:
-            if isinstance(resource, str):
+            if len(resource) == 1:
+                resource = resource[0]
                 self.resource_type, self.resource_id = resource.split('/', 1)
-            elif isinstance(resource, list):
+            elif len(resource) == 2:
                 self.resource_type, self.resource_id = resource
             else:
                 raise ValueError
@@ -45,21 +56,51 @@ class Arn(object):
         )
 
 
-class FindResource(object):
+class ResourceSearch(object):
     def __init__(self, kv_dict):
         self.kwargs = kv_dict.copy()
         try:
-            self.service = self.kwargs.pop('FindService')
-            self.resource_type = self.kwargs.pop('FindResourceType')
+            self.service = self.kwargs.pop('service')
+            self.type = self.kwargs.pop('type')
         except KeyError:
-            raise KeyError(
-                'Both "FindService" and "FindResourceType" must be specified for --find\'s'
-            )
+            raise KeyError('Both "service" and "type" must be specified for --search\'s')
         if not self.kwargs:
-            raise ValueError('All --find\'s must specify at least one searchable attribute')
+            raise ValueError('All --search\'s must specify at least one searchable attribute')
+
+        try:
+            self.listing_fn = SERVICE_MAP[self.service]['list'][self.type]['fn']
+            self.listing_key = SERVICE_MAP[self.service]['list'][self.type]['key']
+            self.listing_params = SERVICE_MAP[self.service]['list'][self.type]['params']
+            self.is_grantee = self.type in SERVICE_MAP[self.service]['grantees']
+        except KeyError:
+            raise KeyError(f'{self.service}:{self.type} is not supported for search')
+        if not self.is_grantee and self.type not in SERVICE_MAP[self.service]['describe']:
+            raise KeyError(f'{self.service}:{self.type} is not supported as a resource')
+
+    def find_arn(self, aws_account_id):
+        api_params = {key: value for key, value in {
+            'AwsAccountId': aws_account_id,
+            'Namespace': 'default',
+        }.items() if key in self.listing_params}
+
+        client = boto3.client(self.service)
+        data = getattr(client, self.listing_fn)(**api_params)[self.listing_key]
+
+        matches = []
+        for entity in data:
+            if all(entity.get(key) == value for key, value in self.kwargs.items()):
+                matches.append(entity)
+        if not matches:
+            raise ValueError(f'No matches for {self.kwargs}')
+        if len(matches) > 1:
+            for match in matches:
+                print(match)
+                raise ValueError(f'Multiple matches for {self.kwargs}')
+
+        return matches[0]['Arn']
 
     def __str__(self):
-        return f'{self.service}:{self.resource_type}/{self.kwargs}'
+        return f'{self.service}:{self.type}/{self.kwargs}'
 
 
 def _flatten(lst):
@@ -78,20 +119,12 @@ def _key_value_pairs_to_dicts(kvps):
     return dicts
 
 
+def get_aws_account_id():
+    return boto3.client('sts').get_caller_identity().get('Account')
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--find',
-        help=(
-            'Find RESOURCE or GRANTEE by attribute. '
-            'Note: The attribute FindService and FindResourceType is required. '
-            'Eg: --find FindService=quicksight FindResourceType=user Email=andy.roxby@riskfocus.com'
-        ),
-        type=str,
-        metavar='KEY=VALUE',
-        action='append',
-        nargs='+',
-    )
     parser.add_argument(
         '--grantees',
         help='ARNs which should be granted permission',
@@ -106,6 +139,18 @@ def parse_args(argv):
         metavar='RESOURCE',
         nargs='*',
     )
+    parser.add_argument(
+        '--search',
+        help=(
+            'Find RESOURCE or GRANTEE by attribute. '
+            'Note: The attribute service and type is required. '
+            'Eg: --search service=quicksight type=user Email=andy.roxby@riskfocus.com'
+        ),
+        type=str,
+        metavar='KEY=VALUE',
+        action='append',
+        nargs='+',
+    )
 
     args = parser.parse_args(argv[1:])
     return args
@@ -114,12 +159,24 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
     # Continue to parse and validate args
-    resources = [Arn(resource) for resource in args.resources or ()]
     grantees = [Arn(grantee) for grantee in args.grantees or ()]
-    find = [FindResource(d) for d in _key_value_pairs_to_dicts(args.find or ())]
-    print([str(_) for _ in resources])
+    resources = [Arn(resource) for resource in args.resources or ()]
+    searches = [ResourceSearch(d) for d in _key_value_pairs_to_dicts(args.search or ())]
+
+    if not any((grantees, resources, searches)):
+        raise RuntimeError('Nothing to do')
+
+    aws_account_id = get_aws_account_id()
+
+    for search in searches:
+        arn = search.find_arn(aws_account_id)
+        if search.is_grantee:
+            grantees.append(Arn(arn))
+        else:
+            resources.append(Arn(arn))
+
     print([str(_) for _ in grantees])
-    print([str(_) for _ in find])
+    print([str(_) for _ in resources])
 
 
 if __name__ == '__main__':
