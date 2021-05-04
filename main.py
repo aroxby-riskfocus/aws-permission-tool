@@ -19,8 +19,19 @@ SERVICE_MAP = {
                 'params': ('AwsAccountId', )
             },
         },
-        'describe': {
-            'dataset': 'describe_data_set',
+        'desc-perms': {
+            'dataset': {
+                'fn': 'describe_data_set_permissions',
+                'key': 'Permissions',
+                'params': ('AwsAccountId', 'DataSetId')
+            }
+        },
+        'grant-perms': {
+            'dataset': {
+                'fn': 'update_data_set_permissions',
+                'key': 'Status',
+                'params': ('AwsAccountId', 'DataSetId', 'GrantPermissions'),
+            },
         },
         'grantees': ('user'),
     },
@@ -67,24 +78,22 @@ class ResourceSearch(object):
         if not self.kwargs:
             raise ValueError('All --search\'s must specify at least one searchable attribute')
 
-        try:
-            self.listing_fn = SERVICE_MAP[self.service]['list'][self.type]['fn']
-            self.listing_key = SERVICE_MAP[self.service]['list'][self.type]['key']
-            self.listing_params = SERVICE_MAP[self.service]['list'][self.type]['params']
-            self.is_grantee = self.type in SERVICE_MAP[self.service]['grantees']
-        except KeyError:
+        is_listable = self.type in SERVICE_MAP[self.service]['list']
+        is_describable = self.type in SERVICE_MAP[self.service]['desc-perms']
+        is_updatable = self.type in SERVICE_MAP[self.service]['grant-perms']
+        self.is_grantee = self.type in SERVICE_MAP[self.service]['grantees']
+        if not is_listable:
             raise KeyError(f'{self.service}:{self.type} is not supported for search')
-        if not self.is_grantee and self.type not in SERVICE_MAP[self.service]['describe']:
+        if not self.is_grantee and (not is_describable or not is_updatable):
             raise KeyError(f'{self.service}:{self.type} is not supported as a resource')
 
     def find_arn(self, aws_account_id):
-        api_params = {key: value for key, value in {
-            'AwsAccountId': aws_account_id,
-            'Namespace': 'default',
-        }.items() if key in self.listing_params}
-
-        client = boto3.client(self.service)
-        data = getattr(client, self.listing_fn)(**api_params)[self.listing_key]
+        data = _make_api_call(
+            self.service, self.type, 'list', {
+                'AwsAccountId': aws_account_id,
+                'Namespace': 'default',
+            },
+        )
 
         matches = []
         for entity in data:
@@ -119,8 +128,61 @@ def _key_value_pairs_to_dicts(kvps):
     return dicts
 
 
+def _make_api_call(service, resource_type, verb, api_params):
+    use_fn = SERVICE_MAP[service][verb][resource_type]['fn']
+    use_key = SERVICE_MAP[service][verb][resource_type]['key']
+    use_params = SERVICE_MAP[service][verb][resource_type]['params']
+
+    api_params = {key: value for key, value in api_params.items() if key in use_params}
+
+    client = boto3.client(service)
+    data = getattr(client, use_fn)(**api_params)
+
+    try:
+        data = data[use_key]
+    except KeyError:
+        print(data.keys())
+        raise
+    return data
+
+
 def get_aws_account_id():
     return boto3.client('sts').get_caller_identity().get('Account')
+
+
+def get_best_permissions(arn):
+    data = _make_api_call(
+        arn.service, arn.resource_type, 'desc-perms', {
+            'AwsAccountId': arn.account_id,
+            'Namespace': 'default',
+            'DataSetId': arn.resource_id,
+        },
+    )
+
+    # HACK this returns the most specific permissions NOT the "best"
+    best_permissions = []
+    for permission_block in data:
+        actions = permission_block['Actions']
+        if len(actions) > len(best_permissions):
+            best_permissions = actions[:]
+
+    return best_permissions
+
+
+def grant_permissions(resource, actions, grantee):
+    data = _make_api_call(
+        resource.service, resource.resource_type, 'grant-perms', {
+            'AwsAccountId': resource.account_id,
+            'Namespace': 'default',
+            'DataSetId': resource.resource_id,
+            'GrantPermissions': ({
+                'Principal': str(grantee),
+                'Actions': actions,
+            },)
+        },
+    )
+
+    return data
 
 
 def parse_args(argv):
@@ -175,8 +237,16 @@ def main(argv):
         else:
             resources.append(Arn(arn))
 
-    print([str(_) for _ in grantees])
-    print([str(_) for _ in resources])
+    for resource in resources:
+        print(f'Processing {str(resource)}')
+        permissions = get_best_permissions(resource)
+        for grantee in grantees:
+            status = grant_permissions(resource, permissions, grantee)
+            if status != 200:
+                msg = f'Unexpected status {status} while updating {str(resource)} for {str(grantee)}'
+                print(msg, file=sys.stderr)
+
+    print('Done!')
 
 
 if __name__ == '__main__':
